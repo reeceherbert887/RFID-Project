@@ -1,141 +1,205 @@
+#include <Servo.h>
 #include <SPI.h>
 #include <MFRC522.h>
-#include <LiquidCrystal.h>
-#include <Servo.h>
 
-#define SS_PIN 10 //SS Pin 
-#define RST_PIN 9 //RST Pin
-#define BUZZER 4 //Buzzer
+//RFID
+#define SS_PIN 10
+#define RST_PIN 9
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+bool systemStarted = false;
 
-MFRC522 mfrc522(SS_PIN, RST_PIN); // Create MFRC522 Instance.
-LiquidCrystal lcd(A0, A1, A2, A3, A4, A5);
-Servo servo_5;
+//Ultrisonic Set Up
+const int trigPin = 8; //Orange
+const int echoPin = 7; //Trig 
 
-int delayTime = 200;
+//LEDs Set Up
+const int led1 = A2;  // Urgent
+const int led2 = A3;  // High Risk
+const int led3 = A4;  // Low Risk
+const int led4 = A5; // No Risk
 
-void setup()
-{
-Serial.begin(9600); // Initiate A Serial Communication
-SPI.begin(); // Initiate SPI Bus
-mfrc522.PCD_Init(); // Initiate MFRC522
+//Buzzer 
+const int buzzerPin = 4;
 
-lcd.begin(16, 2);
-servo_5.attach(5, 500, 2500);
-lcd.setCursor(0,0);
-lcd.print("Door Locked");
-Serial.println("System Ready");
-pinMode(7, OUTPUT); //Red
-pinMode(6, OUTPUT); // Green
-pinMode(4, OUTPUT); //Buzzer
-digitalWrite(7, HIGH); //Red
-digitalWrite(6, LOW); //Green
- servo_5.write(0); //Servo Starts At 0deg (Locked)
+//Servos And Servo Control
+Servo leftServo;
+Servo rightServo;
+const int leftPin = 2;
+const int rightPin = 3;
+const int leftStop = 94;
+const int rightStop = 93;
+int forwardLeft = leftStop + 8;
+int forwardRight = rightStop - 10;
+
+void setup() {
+  Serial.begin(9600);
+
+  SPI.begin();
+  mfrc522.PCD_Init();
+  Serial.println("Waiting For Tag");
+
+  //Ultrisonic
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  //LEDs
+  pinMode(led1, OUTPUT);
+  pinMode(led2, OUTPUT);
+  pinMode(led3, OUTPUT);
+  pinMode(led4, OUTPUT);
+
+  //Buzzer 
+  pinMode(buzzerPin, OUTPUT);
+
+  //Servos/Serial Monitor
+  Serial.print("Left: ");
+  Serial.print(forwardLeft);
+  Serial.print(" | Right: ");
+  Serial.println(forwardRight);
+  leftServo.attach(leftPin);  // Left Wheel
+  rightServo.attach(rightPin); // Right Wheel
+
+  stopMoving();  // Keep Wheels Still On Power-Up
 }
-void loop()
-{
-// Look For New Cards
-if ( ! mfrc522.PICC_IsNewCardPresent())
-{
-return;
-}
-// Select One Of The Cards
-if ( ! mfrc522.PICC_ReadCardSerial())
-{
-return;
-}
 
-// Show UID On Serial Monitor
-    Serial.print("UID tag: ");
-    String content = "";
-
-for (byte i = 0; i < mfrc522.uid.size; i++) {
-    if (mfrc522.uid.uidByte[i] < 0x10) {
-      content += "0"; // Add Leading Zero If Needed, But No Space
-    }
-    content += String(mfrc522.uid.uidByte[i], HEX);
-
-    if (i < mfrc522.uid.size - 1) { //Add Space If Not The Last Byte
-      content += " ";
-    }
-    Serial.print("Byte ");
-    Serial.print(i);
-    Serial.print(": ");
-    Serial.print(mfrc522.uid.uidByte[i], HEX);
-    Serial.println();
-  }
-    content.toUpperCase(); // Convert To Uppercase For Proper Matching
-    Serial.println(content); // Debugging: Print Scanned UID
-    Serial.print("Content: "); //Debugging
-    Serial.println(content); //Debugging
-
-    // Known Valid UIDs
-    String validCard1 = "12 07 F2 EF";
-    String validCard2 = "56 C9 DE A1";
-
-    // Debugging The Comparison
- if (content == validCard1) {
-        Serial.println("Valid card 1 detected");
-    } else if (content == validCard2) {
-        Serial.println("Valid card 2 detected");
+void loop() {
+  if(!systemStarted) {
+    if(checkForValidCard()){
+      Serial.println("Accsess Granted");
+      tone(buzzerPin, 1000, 500);
+      delay(1000);
+      systemStarted = true;
     } else {
-        Serial.println("Unknown card");
+      return;
     }
+  }
 
-    Serial.print("Message : ");
+  float distance = getDistance();
+  Serial.print("Distance: ");
+  Serial.println(distance);
 
-    if (content == validCard1 || content == validCard2) // Check For Valid UIDs
-    {
-        lcd.setCursor(0, 0);
-        lcd.print("Access Granted");
-        Serial.println("Access Granted");
-        digitalWrite(7, LOW); //Red
-        digitalWrite(6, HIGH); //Green
-        
-       
-        tone(4, 440);
-        delay(delayTime);
-        tone(4, 494);
-        delay(delayTime);
-        tone(4, 523);
-        delay(delayTime);
-        noTone(4);
+  if (distance <= 15) {
+    stopMoving();
+    beep(600, 4);
+    delay(200);
+    uTurn();
+  } else if (distance <= 20) {
+    slowForward();
+    beep(500, 3);
+  } else {
+    goForward();
+    noTone(buzzerPin);
+  }
 
-        // Move Servo To Unlock (180 Degrees)
-        Serial.println("Door Unlocked");
-      for (int pos = 0; pos <= 180; pos += 1) {
-        servo_5.write(pos);
-        delay(15);
-      }
+  // LED Feedback
+  updateLEDs(distance);
+  delay(100);
+}
+//RFID Control, Data Handling (For The Correct Cards) 
+bool checkForValidCard() {
+  if (!mfrc522.PICC_IsNewCardPresent()) return false;
+  if (!mfrc522.PICC_ReadCardSerial()) return false;
 
-      delay(5000);  // Give Time For The User To Read
- 
-  // Move Servo Back To Lock (0 Degrees)
-  Serial.println("Door Locked");
-      for (int pos = 180; pos >= 0; pos -= 1) {
-        servo_5.write(pos);
-        delay(15);
-      }
-        
-    }
+  String content = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    if (mfrc522.uid.uidByte[i] < 0x10) content += "0";
+    content += String(mfrc522.uid.uidByte[i], HEX);
+    if (i < mfrc522.uid.size - 1) content += " ";
+  }
 
-    else
-    {
-      Serial.println("Buzzer: Incorrect Card");
-        lcd.setCursor(0,0);
-      lcd.print("Incorrect Card");
-      Serial.println("Incorrect Card");
-      digitalWrite(7, HIGH); //Red 
-      digitalWrite(6, LOW); //Green
-      tone(4, 1000, 500); //Buzzer 
+  content.toUpperCase();
+  Serial.print("Scanned UID: ");
+  Serial.println(content);
 
-      delay(2000);
-    }
-    
-    
-    lcd.clear();  // Now Alear After A Delay
-    lcd.setCursor(0,0);
-    lcd.print("Door Locked");
-    Serial.println("Door Locked");
-    digitalWrite(7, HIGH); //Red
-    digitalWrite(6, LOW); //Green
+  return (content == "12 07 F2 EF" || content == "56 C9 DE A1");
+}
+
+float getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  if(duration == 0) {
+    return 999;
+  }
+
+  float distance = duration * 0.034 / 2;
+  // Clamp Anything Under 2 cm (Noise) As Invalid
+  if (distance < 2) return 999;
+
+  return distance;
+}
+
+void goForward() {
+  leftServo.write(forwardLeft);   // FS90R - Tweak As Needed
+  rightServo.write(forwardRight); // Opposite Direction
+}
+
+void slowForward() {
+  leftServo.write(forwardLeft - 5);   // Slightly Slower
+  rightServo.write(forwardRight + 5);
+}
+
+void stopMoving() {
+  leftServo.write(leftStop);
+  rightServo.write(rightStop);
+}
+
+void reverse(int speed) {
+  leftServo.write(leftStop - speed);   // Move In Reverse Direction
+  rightServo.write(rightStop + speed); // Move In Reverse Direction
+}
+
+void uTurn() {
+  unsigned long startTime = millis();
+
+  // Reverse Until Clear Or 20 Seconds Max
+  while (getDistance() <= 15 && millis() - startTime < 20000) {
+    reverse(10);
+    updateLEDs(getDistance());
+    delay(100);
+  }
+
+  stopMoving();
+  delay(500);
+
+  leftServo.write(forwardLeft);
+  rightServo.write(leftStop);
+
+  delay(1800);
+
+  stopMoving();
+  delay(300);
+
+  goForward();
+}
+
+void beep(int frequency, int count) {
+  for (int i = 0; i < count; i++) {
+    tone(buzzerPin, frequency);
+    delay(100);
+    noTone(buzzerPin);
+    delay(100);
+  }
+}
+
+void updateLEDs(float distance) {
+  digitalWrite(led1, LOW);
+  digitalWrite(led2, LOW);
+  digitalWrite(led3, LOW);
+  digitalWrite(led4, LOW);
+
+  if (distance <= 15) {
+    digitalWrite(led4, HIGH);
+  } else if (distance <= 30) {
+    digitalWrite(led3, HIGH);
+  } else if (distance <= 45) {
+    digitalWrite(led2, HIGH);
+  } else if (distance <= 55) {
+    digitalWrite(led1, HIGH);
+  }
 }
